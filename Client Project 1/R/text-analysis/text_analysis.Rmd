@@ -1,0 +1,670 @@
+---
+title: "Text Analysis"
+author: "Chris Gargano"
+date: "June 29, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load Packages
+
+# Data Processing ______________________________________________________________________________
+library(data.table)
+library(dplyr)
+library(reshape2)
+library(tidyverse)
+library(widyr) # for untidying data into a wide matrix, performing some processing, then turing it back into a tidy form
+
+# Text Analysis ________________________________________________________________________________
+library(glue) # for implementation of ointerpreted string literals
+library(qdap) # provides parsing tools for preparing transcript ata
+library(rvest) # for scraping web pages
+library(stringr) # common string operations
+library(tidytext) # Tidy's text mining package; probably included in tidyverse package...
+library(tm) # Text Mining package
+library(topicmodels) # for Latent Dirichlet Allocation (LDA) models and Correlated Topics models
+
+# Data Viz _____________________________________________________________________________________
+library(igraph) # Simple graphs and network analysis
+library(ggraph) # Extension of ggplot2, better for data outside of tabular formats
+library(scales) # graphical aesthetics
+library(wordcloud) # for creating word clouds
+
+
+# Set working Directory
+setwd("~/DataSci/Method-Data-Science/PhotoPharmics/R/text-analysis")
+```
+
+```{r}
+# Read in data
+data <- fread("../rawdata/pubmed_abstracts_batch_CG_20180703.csv", header = TRUE)
+
+# Only looking at: Parkinson's, Alzheimer's, Dementia, Brain Cancer
+```
+
+--------------------------------------------------------------------------------
+Tidy Text Format
+--------------------------------------------------------------------------------
+```{r}
+# Make imported data Tidy
+
+# Change Disease to a factor
+data$disease <- as.factor(data$disease)
+
+# Remove numbers from the text
+# because trying to replace the number wasn't able to finish running...
+data$abstract <- removeNumbers(data$abstract)
+
+# Tokenize the abstracts dataframe
+tidy_data <- data %>%
+  unnest_tokens(word, abstract) %>%
+  group_by(disease)
+
+# Remove stop words
+tidy_data <- tidy_data %>%
+  anti_join(stop_words)
+
+# Count the most common words from all of the abstracts
+tidy_data %>%
+  group_by(disease) %>%
+  count(word, sort = TRUE) %>%
+  arrange(disease)
+
+head(tidy_data)
+```
+
+```{r}
+# Visualize Most Common Words
+data %>%
+  unnest_tokens(word, abstract) %>%
+  anti_join(stop_words) %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 1000) %>% # Set the lower limit for the # of occurences
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+```
+
+```{r}
+# Create frequency by disease for the abstracts only
+freq <- tidy_data %>%
+  mutate(word = str_extract(word, "[a-z']+")) %>%
+  count(word, sort = TRUE) %>%
+  mutate(proportion = n / sum(n)) %>% 
+  select(-n) %>% 
+  spread(disease, proportion) %>%
+  gather(disease, proportion, `alzheimers`:`dementia`) %>%
+  # Select the diseases you want to be on the x-axis
+  # The disease that was not picked will be on the y-axis
+  arrange(disease)
+
+ggplot(freq, aes(x = proportion, y = `parkinsons`, color = abs(`parkinsons` - proportion))) +
+  geom_abline(color = "gray40", lty = 2) +
+  geom_jitter(alpha = 0.1, size = 2.5, width = 0.3, height = 0.3) +
+  geom_text(aes(label = word), check_overlap = TRUE, vjust = 1.5) +
+  scale_x_log10(labels = percent_format()) +
+  scale_y_log10(labels = percent_format()) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") +
+  facet_wrap(~disease, ncol = 2) +
+  theme(legend.position="none") +
+  labs(y = "Parkinson's Disease", x = NULL) +
+  ggtitle("Word Correlation vs. Parkinson's Disease")
+
+```
+
+--------------------------------------------------------------------------------
+Sentiment Analysis
+--------------------------------------------------------------------------------
+```{r}
+#AFINN lexicon
+afinn <- tidy_data  %>%
+  #filter(disease == c(list of diseases))%>% # adjust selected diseases if you want to filter
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(index = V1, disease) %>% #V 1 also corresponds to Article_title
+  summarise(sentiment = sum(score)) %>%
+  mutate(method = "AFINN")
+  
+afinn
+
+#Bing and NRC Lexicons
+bing_and_nrc <- bind_rows(tidy_data %>%
+                            inner_join(get_sentiments("bing")) %>%
+                            mutate(method = "Bing"),
+                          tidy_data %>%
+                            inner_join(get_sentiments("nrc") %>%
+                                         filter(sentiment %in% c("positive", "negative"))) %>%
+                            mutate(method = "NRC")) %>%
+  count(method, index = V1, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+  #filter(disease == c("list of diseases")) # adjust selected diseases if you want to filter
+
+bing_and_nrc
+
+# Visualize
+
+# Smoothed Line Plots by Diseas x Sentiment Method
+# Issue with the row indices not lining up, though...
+bind_rows(afinn, bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_smooth(show.legend = FALSE, color = "black") +
+  #facet_wrap(~method, ncol = 1, scales = "free_y")
+  facet_grid(disease~method, scales = "free_y")
+
+# Histograms by Disease x Sentiment Method
+bind_rows(afinn, bing_and_nrc) %>%
+  ggplot(aes(sentiment,  color = method)) +
+  geom_bar(show.legend = FALSE) +
+  facet_grid(disease~method, scales = "free_y") +
+  ggtitle("Sentiment Analysis by Disease x Sentiment Method")
+```
+
+```{r}
+# Most Common Positive and Negative Words
+words <- as.data.table(tidy_data$word)
+colnames(words) <- "word"
+
+#bing_word_counts <- park_words %>%
+bing_word_counts <- words %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  arrange(desc(n)) %>%
+  ungroup()
+
+bing_word_counts
+
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  arrange(desc(n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to Sentiment", x = NULL) +
+  coord_flip() +
+  ggtitle("Most Common Negative & Positive Words")
+```
+
+
+```{r}
+# Wordclouds
+
+# Standard Word Cloud
+tidy_data %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+# A lot of words don't fit on the page and are omitted from the plot...
+
+# Using reshape2
+tidy_data %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("red4", "green4"),
+                   max.words = 100)
+# Almost all of the words don't fit in the word cloud...
+
+# Filter to only include disease == "parkinsons"
+tidy_data %>%
+  filter(disease == "parkinsons") %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("red4", "green4"),
+                   max.words = 100)
+# Better, but still not ideal
+```
+
+--------------------------------------------------------------------------------
+Analyzing Word & Doc Frequency
+--------------------------------------------------------------------------------
+```{r}
+# Term Frequency in tidy_data
+disease_words <- tidy_data %>%
+  count(disease, word, sort = TRUE) %>%
+  ungroup()
+
+disease_words
+
+total_words <- disease_words %>%
+  group_by(disease) %>%
+  summarize(total = sum(n))
+
+total_words
+
+disease_words <- left_join(disease_words, total_words) #%>%
+#  filter(disease == c(list of diseases)) # In case you wanted to filter by disease
+
+# Plot term frequency
+ggplot(disease_words, aes((n/total), fill = disease)) + 
+  geom_histogram(show.legend = FALSE) + 
+  xlim(NA, 0.001) + 
+  facet_wrap(~disease, scales = "free_y") +
+  ggtitle("Frequency of Words by Disease")
+```
+
+```{r}
+# Zipf's Law --> Term Freq x Rank
+freq_by_rank <- disease_words %>%
+  group_by(disease) %>%
+  mutate(rank = row_number(),
+         `term frequency` = n/total)
+
+freq_by_rank
+
+# Plot it
+freq_by_rank %>% 
+  ggplot(aes(rank, `term frequency`, color = disease)) + 
+  geom_line(size = 1.1, alpha = 0.8) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  ggtitle("Term Frequency by Disease")
+
+
+rank_subset <- freq_by_rank %>%
+  filter(rank < 500, rank > 10)
+
+# Use this model to adjust the intercept and slope below
+lm(log10(`term frequency`) ~ log10(rank), data = rank_subset)
+
+freq_by_rank %>% 
+  ggplot(aes(rank, `term frequency`, color = disease)) + 
+  geom_abline(intercept = -1.508, slope = -0.701, color = "gray50", linetype = 2) +
+  geom_line(size = 1.1, alpha = 0.8) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  ggtitle("Term Frequency by Disease")
+```
+
+```{r}
+# The bind_tf_idf function
+# Find the important words for the content of each doc by decreasing the weight for
+# commonly used words and increasing the weights for uncommon words in a collection of docs
+# i.e. Find words that are important (i.e. common), but not too common
+# idf = Inverse Document Frequency
+
+disease_words <- disease_words %>%
+  bind_tf_idf(word, disease, n)
+disease_words
+
+# Look at terms with high tf-idf
+disease_words %>%
+  select(-total) %>%
+  arrange(desc(tf))
+
+# Visualize high tf-idf words
+disease_words %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word)))) %>%
+  group_by(disease) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  ggplot(aes(word, tf_idf, fill = disease)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf-idf") +
+  facet_wrap(~disease, ncol = 2, scales = "free_y") +
+  coord_flip() +
+  ggtitle("TF-IDF Plots")
+
+```
+
+--------------------------------------------------------------------------------
+Relationships between words: n-grams and correlations
+--------------------------------------------------------------------------------
+```{r}
+#Bigrams
+data_bigrams <- data %>%
+  #filter(disease == c(list of diseases)) %>%
+  unnest_tokens(bigram, abstract, token = "ngrams", n = 2)
+
+data_bigrams
+
+# Counting and Filtering
+data_bigrams %>%
+  count(bigram, sort = TRUE)
+
+# Get rid of bigrams with stopwords
+bigrams_sep <- data_bigrams %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+bigrams_filtered <- bigrams_sep %>%
+  filter(!word1 %in% stop_words$word) %>%
+  filter(!word2 %in% stop_words$word)
+
+# New bigram counts
+bigram_counts <- bigrams_filtered %>%
+  count(word1, word2, sort = TRUE)
+
+bigram_counts
+
+# Re-unite the bigrams
+bigrams_united <- bigrams_filtered %>%
+  unite(bigram, word1, word2, sep = " ")
+
+bigrams_united
+
+#tf-idf viz of bigrams
+bigram_tf_idf <- bigrams_united %>%
+  count(disease, bigram) %>%
+  bind_tf_idf(bigram, disease, n) %>%
+  arrange(desc(tf_idf))
+
+bigram_tf_idf
+
+# Visualize high tf-idf words
+bigram_tf_idf %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(bigram = factor(bigram, levels = rev(unique(bigram)))) %>%
+  group_by(disease) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  ggplot(aes(bigram, tf_idf, fill = disease)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf-idf") +
+  facet_wrap(~disease, ncol = 2, scales = "free_y") +
+  coord_flip() +
+  ggtitle("TF-IDF of Bigrams")
+```
+
+```{r}
+# Visualizing a network of bigrams
+# library(igraph)
+
+# Filter for only relatively common combos
+bigram_graph <- bigram_counts %>%
+  filter(n > 100) %>% # Adjust the frequency cut-off here
+  graph_from_data_frame()
+
+bigram_graph
+
+#library(ggraph)
+set.seed(1)
+
+a <- grid::arrow(type = "closed", length = unit(0.2, "cm"))
+
+ggraph(bigram_graph, layout = "fr") +
+  geom_node_point(color = "lightblue", size = 4) +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a) + #, end_cap = circle(0.1, "cm")) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+
+```
+
+```{r}
+# Counting and Correlating Pairs of Words
+# For just Parkinsons Disease articles
+# library(widyr)
+
+word_pairs <- data %>%
+  #filter(disease == "parkinsons") %>%
+  unnest_tokens(word, abstract) %>%
+  filter(!word %in% stop_words$word) %>%
+  group_by(disease) %>%
+  pairwise_count(word, V1, sort = TRUE)
+
+word_pairs
+
+word_pairs %>%
+  filter(item1 == "parkinson")
+
+# Pairwise correlation
+word_cors <- data %>%
+  filter(disease == "parkinsons") %>%
+  unnest_tokens(word, abstract) %>%
+  filter(!word %in% stop_words$word) %>%
+  group_by(word) %>%
+  filter(n() >= 20) %>%
+  pairwise_cor(word, V1, sort = TRUE)
+
+word_cors
+
+word_cors %>%
+  filter(item1 == "parkinson") %>%
+  arrange(correlation)
+
+# Visualize
+word_cors %>%
+  filter(item1 %in% c("parkinson", "treatment", "symptom", "eye")) %>%
+  group_by(item1) %>%
+  top_n(6) %>%
+  ungroup() %>%
+  mutate(item2 = reorder(item2, correlation)) %>%
+  ggplot(aes(item2, correlation)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ item1, scales = "free") +
+  coord_flip()
+
+# Visualize Bigrams
+set.seed(1)
+
+word_cors %>%
+  filter(correlation > 2/3) %>%
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = correlation), show.legend = FALSE) +
+  geom_node_point(color = "lightblue", size = 4) +
+  geom_node_text(aes(label = name), repel = TRUE) +
+  theme_void()
+```
+
+--------------------------------------------------------------------------------
+Converting to and from non-tidy formats
+--------------------------------------------------------------------------------
+
+```{r}
+# Tidying a document-term matrix
+disease_sentiments <- tidy_data %>%
+  count(V1, disease, word, sort = TRUE) %>%
+  inner_join(get_sentiments("bing")) %>%
+  arrange(V1)
+
+disease_sentiments
+
+# Visualize top and bottom sentiment words for just Parkinson's Disease
+disease_sentiments %>%
+  #filter(disease == "parkinsons") %>%
+  count(sentiment, word, wt = n) %>%
+  ungroup() %>%
+  filter(nn >= 100) %>%
+  mutate(nn = ifelse(sentiment == "negative", -nn, nn)) %>%
+  mutate(word = reorder(word, nn)) %>%
+  ggplot(aes(word, nn, fill = sentiment)) +
+  geom_bar(stat = "identity") +
+  ylab("Contribution to sentiment") +
+  facet_wrap(~disease, ncol = 2, scales = "free_y") +
+  coord_flip()
+```
+
+```{r}
+# Tidying dfm objects
+
+# Find the words most specific to each Article (V1) / Disease
+disease_word_counts <- tidy_data %>%
+  #filter(disease == "parkinsons") %>%
+  count(Date, word, sort = TRUE) %>%
+  extract(Date, "year", "(\\d+)", convert = TRUE) %>%
+  complete(year, word, fill = list(n = 0)) %>%
+  group_by(disease, year) %>%
+  mutate(year_total = sum(n)) %>%
+  select(-disease)
+
+disease_word_counts %>% arrange(desc(n))
+
+# Plot frequency of key words by year
+disease_word_counts %>%
+  filter(word %in% c("significant", "healthy", "survival", "regression", "treatment", "positive")) %>%
+  ggplot(aes(year, n / year_total)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(~ word, scales = "free_y") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  ylab("% Frequency of Word per Year")
+```
+
+```{r}
+# Positivity / Negativity scores by each disease
+disease_sentiments
+
+# Not sure why the plot isn't getting ordered from High to Low...
+disease_sentiments %>%
+  select(-V1) %>%
+  group_by(disease, word, sentiment) %>%
+  summarise(count = sum(n)) %>%
+  spread(sentiment, count, fill = 0) %>%
+  mutate(score = (positive - negative) / (positive + negative)) %>%
+  group_by(disease) %>%
+  summarise(total_score = sum(score)) %>%
+  arrange(desc(total_score), disease) %>% #since line above didn't work...
+  ggplot(aes(disease, total_score, fill = total_score > 0)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(x = "Disease", y = "Positivity Score")
+```
+
+--------------------------------------------------------------------------------
+Topic Modeling (including LDA)
+--------------------------------------------------------------------------------
+```{r}
+# Latent Dirichlet Allocation (LDA)
+# Every document is a mixture of topics
+# Every topic is a mixture of words
+
+# library(topicmodels)
+
+# First, need to create a document-term matrix, starting with just Parkinsons
+# and only using the most recent 500 articles, otherwise the object is too large...
+# Subset to only pull the most recent 500 articles
+parkinsons_subset500 <- subset(tidy_data, disease == "parkinsons")
+parkinsons_subset500 <- subset(parkinsons_subset500, V1 >= (max(parkinsons_subset500$V1) - 500))
+
+parkinsons_corpus <- Corpus(VectorSource(subset(parkinsons_subset500)$word))
+
+parkinsons_tdm <- TermDocumentMatrix(parkinsons_corpus)
+parkinsons_dtm <- DocumentTermMatrix(parkinsons_corpus)
+
+# Remove rows with all 0s
+parkinsons_dtm <- parkinsons_dtm[apply(parkinsons_dtm[,-1], 1, function(x) !all(x==0)),]
+
+# Use k = 2 to create a two-topic LDA model
+parkinsons_lda <- LDA(parkinsons_dtm, k = 2, control = list(seed = 1))
+parkinsons_lda
+
+# Word Topic Probabilities
+# extracting the per-topic-per-word probabilities (beta) from the model
+parkinsons_topics <- tidy(parkinsons_lda, matrix = "beta")
+tail(parkinsons_topics) # Why are all of the terms just numbers???
+
+parkinsons_top_terms <- parkinsons_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+parkinsons_top_terms
+
+# Visualize Top Words per Topic
+parkinsons_top_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip() +
+  ggtitle("Two Topic LDA: 500 Most Recent Articles on Parkinson's Disease")
+```
+
+```{r}
+# Terms that had the greatest difference in beta between topic 1 and topic 2
+# via the log ratio
+
+beta_spread <- parkinsons_topics %>%
+  mutate(topic = paste0("topic", topic)) %>%
+  spread(topic, beta) %>%
+  filter(topic1 > 0.005 | topic2 > 0.005) %>%
+  mutate(log_ratio = log2(topic2 / topic1)) %>%
+  arrange(log_ratio)
+
+beta_spread <- beta_spread[order(beta_spread$log_ratio),] 
+beta_spread
+
+# WHy isn't this sorted from low to high like the raw data is???
+ggplot(beta_spread, aes(term)) +
+  geom_bar(aes(weight = log_ratio), show.legend = FALSE) +
+  coord_flip()
+```
+
+```{r}
+# This chunk would be more useful for data with multiple diseases
+
+# Per Document Per Topic Probabilities (gamma)
+parkinsons_docs <- tidy(parkinsons_lda, matrix = "gamma")
+parkinsons_docs
+
+# Find word counts from parkinsons_docs
+park500_word_count <- parkinsons_subset500 %>%
+  anti_join(stop_words) %>%
+  count(V1, word, sort = TRUE) %>%
+  ungroup() %>%
+  select(-disease)
+
+park500_word_count
+
+# LDA on each article
+parkArticle_dtm <- park500_word_count %>%
+  cast_dtm(V1, word, n)
+
+parkArticle_dtm
+
+parkArticle_lda <- LDA(parkArticle_dtm, k = 2, control = list(seed = 1))
+parkArticle_lda
+
+parkArticle_topics <- tidy(parkArticle_lda, matrix = "beta")
+parkArticle_topics
+
+parkArticle_top_terms <- parkArticle_topics %>%
+  group_by(topic) %>%
+  top_n(5, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+parkArticle_top_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+```
+
+```{r}
+# Per Document (Disease) Classification
+parkArticle_gamma <- tidy(parkArticle_lda, matrix = "gamma")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

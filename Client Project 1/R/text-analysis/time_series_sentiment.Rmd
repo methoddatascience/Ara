@@ -1,0 +1,142 @@
+---
+title: "Sentiment Over Time"
+author: "Chris Gargano"
+date: "July 15, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load Packages
+
+# Data Processing ______________________________________________________________________________
+library(data.table)
+library(dplyr)
+library(reshape2)
+library(tidyverse)
+library(widyr) # for untidying data into a wide matrix, performing some processing, then turing it back into a tidy form
+
+# Text Analysis ________________________________________________________________________________
+library(glue) # for implementation of ointerpreted string literals
+library(qdap) # provides parsing tools for preparing transcript ata
+library(rvest) # for scraping web pages
+library(SnowballC) # for the "wordStem" function
+library(stringr) # common string operations
+library(tidytext) # Tidy's text mining package; probably included in tidyverse package...
+library(tm) # Text Mining package
+library(topicmodels) # for Latent Dirichlet Allocation (LDA) models and Correlated Topics models
+
+# Data Viz _____________________________________________________________________________________
+library(igraph) # Simple graphs and network analysis
+library(ggraph) # Extension of ggplot2, better for data outside of tabular formats
+library(plotly)
+library(scales) # graphical aesthetics
+library(wordcloud) # for creating word clouds
+```
+
+```{r}
+# Set working Directory, adjust accordingly
+setwd("~/DataSci/Method-Data-Science/PhotoPharmics/R")
+```
+
+```{r}
+# Read in data
+data <- fread("../rawdata/pubmed_abstracts_batch_CG_20180703.csv", header = TRUE)
+
+# Only looking at: Parkinson's, Alzheimer's, Dementia, Brain Cancer
+```
+
+--------------------------------------------------------------------------------
+Tidy Text Format
+--------------------------------------------------------------------------------
+```{r}
+# Make imported data Tidy
+
+# Change Disease to a factor
+data$disease <- as.factor(data$disease)
+
+# Change the Date field from Character to an actual Date
+yr <- str_sub(data$Date, 1, 4)
+mo <- str_sub(str_sub(data$Date, 1, 7),-2,-1)
+
+# Using "01" for the day in order to get the data grouped by month
+data$Date <- as.Date(ISOdate(year = yr, month = mo, day = "01"))
+
+```
+
+```{r}
+# More Text Analysis
+
+# Remove numbers from the text
+data$abstract <- removeNumbers(data$abstract)
+
+# Tokenize the abstracts dataframe
+tidy_data <- data %>%
+  unnest_tokens(word, abstract) %>%
+  group_by(disease)
+
+# Stem words
+tidy_data$word <- wordStem(tidy_data$word, "english")
+  
+# Remove stop words
+tidy_data <- tidy_data %>%
+  anti_join(stop_words)
+```
+
+```{r}
+head(tidy_data)
+```
+
+# Organize data by: 
+#   1) Date (for the time series component)
+#   2) disease (for grouping)
+#   3) word (for sentiment analysis and word count per disease)
+
+
+```{r}
+# Number of articles per by Month (Date) and disease
+n <- data %>%
+  select(Date, disease) %>%
+  group_by(Date, disease) %>%
+  count(Date, disease) %>%
+  rename(index = Date) %>%
+  arrange(index, disease)
+
+n <- n[,c("index", "disease", "n")]
+```
+
+# Apply sentiment analysis to the data frame
+
+```{r}
+# AFINN
+# Categorizes words into scores ranging from -5 to +5,
+# with negative scores indicating negative sentiment
+
+afinn <- tidy_data %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(index = Date, disease) %>%
+  summarise(sentiment = sum(score)) %>%
+  mutate(method = "AFINN") %>%
+  left_join(n, by = c("index", "disease"))
+
+head(afinn)
+
+# Plot sentiment by method over time
+p1 <- ggplot(afinn, aes(index, sentiment)) +
+  geom_point(aes(color = disease, size = n), alpha = 0.8) +
+  geom_smooth(aes(fill = disease, color = disease), alpha = 0.2) +
+  labs(x = "Month", y = "AFINN Sentiment",
+       color = "Disease", fill = "Disease",# size = "# of Articles",
+       title = "Total Monthly Sentiment by Disease") +
+  scale_color_brewer(palette = "Spectral") +
+  scale_fill_brewer(palette = "Spectral") +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "12 month") +
+  scale_y_continuous(limits = c(-200, 200)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45))
+
+ggplotly(p1)
+```

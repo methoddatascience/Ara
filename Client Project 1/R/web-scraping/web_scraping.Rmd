@@ -1,0 +1,149 @@
+---
+title: "Web Scraping Test"
+author: "Chris Gargano"
+date: "June 26, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load Packages
+library(tidyr)
+library(tidytext)
+library(rvest)
+library(tm)
+library(stringr)
+library(qdap)
+```
+
+# Key elements of a Pubmed Abstract
+----------------------------------------------------------------------------------------------------
+# Everything below = <div class="rprt abstract"> or <div class="rprt_all">
+# Citation = <div class="cit"
+# Abstract Title = <h1>
+# Authors = <div class="auths">
+# Author Information = <div class="afflist">
+# Abstract Body = <div class="abstr">
+# Keywords = <div class="keywords">
+# Auxilary Info = <div class="aux">
+
+
+```{r}
+# Set up a URL to scrape from Pubmed
+url <- "https://www.ncbi.nlm.nih.gov/pubmed/29926787"
+
+# Scrape URLs
+webpage <- read_html(url)
+
+# Extract key elements of Pubmed Abstract
+
+# ---------------------------------------------------------------------------------------------------
+# Citation = <div class="cit"
+cit <- html_text(html_nodes(webpage, ".cit"))
+
+# ---------------------------------------------------------------------------------------------------
+# Abstract Title
+title <- html_text(html_nodes(webpage, "h1"))[2]
+
+# ---------------------------------------------------------------------------------------------------
+# Authors = <div class="auths">
+authors <- html_text(html_nodes(webpage, ".auths"))
+
+# Remove all ".", then parse authors by ", " (keep numbers since they tie to auth_info)
+# Assuming the list always ends with a "."
+# author_list <- strsplit(gsub(".", "", authors), ", ")[[1]] --> doesn't work for some reason...
+author_list <- strsplit(substr(authors, 1, nchar(authors)-1), ", ")[[1]]
+
+# Separate numbers from author names, create a data frame with columns "Author", "Info"
+author_df <- data.frame(author_list) %>%
+  separate(author_list,
+           into = c("Author", "Info"),
+           sep = "(?<=[aA-zZ ])(?=[0-9])"
+           )
+
+# ---------------------------------------------------------------------------------------------------
+# Author Information = <div class="afflist">
+# Don't have a catch-all solution yet... need to find a way to parse by numbers only...
+
+auth_info <- html_text(html_nodes(webpage, ".afflist"))
+
+# Remove "Author information" from beginning
+auth_info <- substr(auth_info, nchar("Author information")+1, nchar(auth_info))
+
+# Replace numbers with "xxxxx", then parse
+auth_info <- str_split(auth_info, fixed("."))[[1]]
+auth_info <- auth_info[1:(length(auth_info)-1)]
+
+# Convert to a data frame with columns "Num" and "Info"
+info_df <- drop_na(data.frame(auth_info) %>%
+  separate(auth_info,
+           into = c("Num", "Info"),
+           sep = "(?<=[0-9])(?=[aA-zZ ])"
+           )
+  )
+
+# ---------------------------------------------------------------------------------------------------
+# Abstract Body = <div class="abstr">
+body <- html_text(html_nodes(webpage, ".abstr"))
+body <- substr(body, nchar("Abstract")+1, nchar(body))
+
+# Common words: "Abstract", "INTRODUCTION", "INTRO", "BACKGROUND", "METHOD", "METHODS", "METHODS/DESIGN", 
+#               "DESIGN", "DESIGNS", "RESULT", "RESULTS", "CONCLUSION", "CONCLUSION"
+
+# ---------------------------------------------------------------------------------------------------
+# Keywords = <div class="keywords">
+keywords <- html_text(html_nodes(webpage, ".keywords"))
+keywords <- substr(keywords, nchar("KEYWORDS: ")+1, nchar(keywords))
+
+# Parse by "; "
+keywords_list <- str_split(keywords, fixed("; "))[[1]]
+
+# ---------------------------------------------------------------------------------------------------
+# Auxilary Info = <div class="aux">
+aux_info <- html_text(html_nodes(webpage, ".aux"))
+```
+
+```{r}
+# Sentiment Analysis of Abstract Body
+body
+
+# Remove stop words
+# Add common PubMed Abstract words to stopwords list
+pubmed_stopwords <- c("Abstract", "INTRODUCTION", "INTRO", "BACKGROUND",  "METHOD", "METHODS",
+                      "METHODS/DESIGN", "DESIGN", "DESIGNS", "RESULT", "RESULTS", "CONCLUSION",
+                      "CONCLUSION", stopwords("en"))
+
+body_text <- removeWords(body, pubmed_stopwords)
+body_text
+
+# Replace special numbers, symbols with words, remove punctuation and white space
+body_text <- removeNumbers(body_text) # need to replace numbers, otherwise decimals screw things up
+body_text <- replace_symbol(body_text)
+body_text <- removePunctuation(body_text)
+body_text <- stripWhitespace(body_text)
+body_text <- tolower(body_text)
+
+body_text
+
+# Tokenize by creating a character vector and a stem doc
+
+# Create a character vector
+n_char_vec <- unlist(strsplit(body_text, split = " "))
+
+# Perform word stemming
+stem_doc <- stemDocument(n_char_vec)
+stem_doc <- as.data.frame(stem_doc)
+names(stem_doc) <- "word"
+
+# ---------------------------------------------------------------------------------------------------
+# Get Sentiment
+body_sentiment <- stem_doc %>%
+  inner_join(get_sentiments("bing")) %>% # pull out only sentiment words, could also try "bing"
+  count(sentiment) %>% # Count the number of positive & negative words
+  spread(sentiment, n, fill = 0) %>% # made data wide rather than narrow
+  mutate(sentiment = positive - negative) #%>% # number of positive words - # of negative words
+
+```

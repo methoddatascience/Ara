@@ -1,0 +1,208 @@
+---
+title: "Web Scraping PubMed"
+author: "Chris Gargano"
+date: "June 26, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load Packages
+library(data.table)
+library(glue)
+library(rvest)
+library(stringr)
+library(tidyverse)
+library(tidytext)
+library(tm)
+```
+
+```{r}
+# Provide a list of URLs
+url_list <- c("https://www.ncbi.nlm.nih.gov/pubmed/29926787",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29929931",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29933398",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29933366",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29936668",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29924746",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29924001",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29936085",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29931570",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29937970",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29912816",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29921918",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29923902",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29914518",
+              "https://www.ncbi.nlm.nih.gov/pubmed/29848781"
+              )
+```
+
+# Key elements of a Pubmed Abstract
+----------------------------------------------------------------------------------------------------
+# Everything below = <div class="rprt abstract"> or <div class="rprt_all">
+# Citation = <div class="cit"
+# Abstract Title = <h1>
+# Authors = <div class="auths">
+# Author Information = <div class="afflist">
+# Abstract Body = <div class="abstr">
+# Keywords = <div class="keywords">
+# Auxilary Info = <div class="aux">
+
+```{r}
+# Function designed to scrape PubMed
+
+scrape_pubmed <- function(url_list) {
+  
+  # Use url_list to initialize the data table
+  output <- data.table(URL = url_list)
+  
+  # ----------------------------------------------------
+  # Loop through list of URLs, scraping for key elements
+  # ----------------------------------------------------
+  
+  for (i in 1:length(url_list)) {
+    
+    print(paste("Scraping URL #", i, sep=""))
+    
+    # --------------------------------------------------
+    # Scrape webpage
+    # --------------------------------------------------
+    tryCatch(webpage <- read_html(url_list[i]),
+             error = function(e) print(paste("Webpage unavailable for URL ", i, sep="")))
+    
+    # --------------------------------------------------
+    # Citation = <div class="cit"
+    # --------------------------------------------------
+    cit <- html_text(html_nodes(webpage, ".cit"))
+    tryCatch(output[i, Citation := cit],
+             error = function(e) print(paste("Citation unavailable for URL ", i, sep="")))
+
+    # --------------------------------------------------
+    # Abstract Title (h1 tag)
+    # --------------------------------------------------
+    title <- html_text(html_nodes(webpage, "h1"))[2]
+    tryCatch(output[i, Title := title],
+             error = function(e) print(paste("Title unavailable for URL ", i, sep="")))
+
+    # --------------------------------------------------
+    # Authors = <div class="auths">
+    # --------------------------------------------------
+    authors <- html_text(html_nodes(webpage, ".auths"))
+    tryCatch(output[i, Authors := authors],
+             error = function(e) print(paste("Authors unavailable for URL ", i, sep="")))
+
+    # --------------------------------------------------
+    # Author Information = <div class="afflist">
+    # --------------------------------------------------
+    auth_info <- html_text(html_nodes(webpage, ".afflist"))
+    auth_info <- substr(auth_info, nchar("Author information")+1, nchar(auth_info))
+    tryCatch(output[i, Author_Info := auth_info], 
+        error = function(e) print(paste("Additional Author Information unavailable for URL ", i, sep="")))
+      
+    # --------------------------------------------------
+    # Abstract Body = <div class="abstr">
+    # --------------------------------------------------
+    body <- html_text(html_nodes(webpage, ".abstr"))
+    body <- substr(body, nchar("Abstract")+1, nchar(body))
+    tryCatch(output[i, Body := body], 
+             error = function(e) print(paste("Abstract Body unavailable for URL ", i, sep="")))
+
+    # Common section breaks in abstract body: "Abstract", "INTRODUCTION", "INTRO", "BACKGROUND",
+    # "METHOD", "METHODS", "METHODS/DESIGN", "DESIGN", "DESIGNS", "RESULT", "RESULTS", 
+    # "CONCLUSION", "CONCLUSION"
+    
+    # --------------------------------------------------
+    # Keywords = <div class="keywords">
+    # --------------------------------------------------
+    keywords <- html_text(html_nodes(webpage, ".keywords"))
+    keywords <- substr(keywords, nchar("KEYWORDS: ")+1, nchar(keywords))
+    tryCatch(output[i, Keywords := keywords], 
+             error = function(e) print(paste("Keywords unavailable for URL ", i, sep="")))
+  
+    # --------------------------------------------------
+    # Auxiliary Info = <div class="aux">
+    # --------------------------------------------------
+    aux_info <- html_text(html_nodes(webpage, ".aux"))
+    tryCatch(output[i, Auxiliary_Info := aux_info], 
+             error = function(e) print(paste("Auxiliary Information unavailable for URL ", i, sep="")))
+    
+    # --------------------------------------------------
+    # Remove all variables before restarting loop (except temp)
+    # --------------------------------------------------
+    rm(webpage, cit, title, authors, auth_info, body, keywords, aux_info)
+    
+    # Print separator
+    print(paste("URL #", i, " complete", sep=""))
+    print("--------------------------------------------------")
+    
+  } # End for loop
+  
+  print("Function Complete")
+
+  output
+
+} # End Function
+
+```
+
+```{r}
+# Test scraping function
+x <- scrape_pubmed(url_list)
+x
+
+x$Body
+```
+
+
+```{r}
+# Function to Parse an individual URL Scrape
+parse_pubmed <- function(scrape_dt, index) {
+
+  # scrape_dt = a data table scraped from the scrape_pubmed function
+  # index = the observation you wish to parse out
+  
+  temp <- scrape_dt[index]
+  
+  # --------------------------------------------------
+  # Parse Authors
+  # --------------------------------------------------
+
+  # Remove all ".", then parse authors by ", " (keep numbers since they tie to auth_info)
+  # Assuming the list always ends with a "."
+  author_list <- strsplit(substr(temp$Authors, 1, nchar(temp$Authors)-1), ", ")[[1]]
+
+  # Separate numbers from author names, create a data frame with columns "Author", "Info"
+  author_df <- drop.na(data.frame(author_list) %>%
+                         separate(author_list,
+                                  into = c("Author", "Info"),
+                                  sep = "(?<=[aA-zZ ])(?=[0-9])"
+                                  )
+                       )
+  
+  # --------------------------------------------------
+  # Parse Author Info
+  # --------------------------------------------------
+  
+  # Replace numbers with "xxxxx", then parse
+  auth_info <- str_split(temp$Author_Info, fixed("."))[[1]]
+  auth_info <- auth_info[1:(length(auth_info)-1)]
+
+  # Convert to a data frame with columns "Num" and "Info"
+  info_df <- drop_na(data.frame(auth_info) %>%
+                       separate(auth_info,
+                                into = c("Num", "Info"),
+                                sep = "(?<=[0-9])(?=[aA-zZ ])"
+                                )
+                     )
+  
+  # --------------------------------------------------
+  # Parse Keywords
+  # --------------------------------------------------
+      
+  # Parse by "; "
+  keyword_list <- str_split(temp$Keywords, fixed("; "))[[1]]
+  
+}
