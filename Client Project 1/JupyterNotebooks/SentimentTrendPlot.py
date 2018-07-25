@@ -6,6 +6,30 @@
 
 def plot_sentiment_trends(df,term='',style='fivethirtyeight'):
     
+    '''
+    Takes in a dataframe, creates 2 plots, and returns a grouped dataframe (by year)
+    
+    Arguments:
+    df - dataframe
+    term - search term, usually disease name. Must be included in the disease column in the dataframe
+    style - plot style, default is fivethirtyeight
+    
+    The 2 plots shown are:
+    1) Percentage of positive articles over time 
+    2) Average Article Sentiment over time
+    
+    The dataframed returned is grouped by year, 
+    and includes the following columns for all positive articles ("_pos"), 
+    negative articles("_neg") and all articles for the search term (no suffix):
+    - group_date : year
+    - min
+    - max
+    - mean
+    - count
+    - perc_pos -  % papers that had a positive sentiment
+    
+    '''
+    
     import pandas as pd
     import numpy as np
     import matplotlib.pyplot as plt
