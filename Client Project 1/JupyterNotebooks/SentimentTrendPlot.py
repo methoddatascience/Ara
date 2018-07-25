@@ -4,7 +4,7 @@
 # In[ ]:
 
 
-def plot_sentiment_trends(dataframe='',term='',style='fivethirtyeight'):
+def plot_sentiment_trends(df,term='',style='fivethirtyeight'):
     
     import pandas as pd
     import matplotlib.pyplot as plt
@@ -14,7 +14,7 @@ def plot_sentiment_trends(dataframe='',term='',style='fivethirtyeight'):
     else:
         disease = term
         
-    if dataframe.empty:
+    if df.empty:
         raise ValueError("Must specify a dataset using the df paramter.")
     else:
 
