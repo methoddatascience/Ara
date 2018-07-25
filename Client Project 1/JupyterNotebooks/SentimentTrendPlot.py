@@ -7,6 +7,7 @@
 def plot_sentiment_trends(df,term='',style='fivethirtyeight'):
     
     import pandas as pd
+    import numpy as np
     import matplotlib.pyplot as plt
     
     if term == '':
