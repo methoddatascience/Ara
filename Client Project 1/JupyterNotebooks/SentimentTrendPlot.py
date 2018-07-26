@@ -49,14 +49,14 @@ def plot_sentiment_trends(df,term='',style='fivethirtyeight'):
 
             plt.style.use(style)
 
-            plot_df_pos = df[(df['disease']== disease) &                              (df['abs_scores'] >= 0)][['abs_scores','Clean_Date']]
-            plot_df_neg = df[(df['disease']== disease) &                              (df['abs_scores'] < 0)][['abs_scores','Clean_Date']]
+            plot_df_pos = df[(df['disease']== disease) & (df['abs_scores'] >= 0)][['abs_scores','Clean_Date']]
+            plot_df_neg = df[(df['disease']== disease) & (df['abs_scores'] < 0)][['abs_scores','Clean_Date']]
             plot_df_all = df[(df['disease']== disease)][['abs_scores','Clean_Date']]
 
 
-            plot_df_pos['group_date'] = plot_df_pos['Clean_Date'].apply(str)                                         .apply(lambda x: x.split('-')[0])
-            plot_df_neg['group_date'] = plot_df_neg['Clean_Date']                                         .apply(str)                                         .apply(lambda x: x.split('-')[0])
-            plot_df_all['group_date'] = plot_df_all['Clean_Date']                                         .apply(str)                                         .apply(lambda x: x.split('-')[0])
+            plot_df_pos['group_date'] = plot_df_pos['Clean_Date'].apply(str).apply(lambda x: x.split('-')[0])
+            plot_df_neg['group_date'] = plot_df_neg['Clean_Date'].apply(str).apply(lambda x: x.split('-')[0])
+            plot_df_all['group_date'] = plot_df_all['Clean_Date'].apply(str).apply(lambda x: x.split('-')[0])
 
 
 
@@ -86,7 +86,7 @@ def plot_sentiment_trends(df,term='',style='fivethirtyeight'):
                              suffixes=['','_all'])
 
             #print(yearly.head())
-            yearly = yearly[yearly['count'] > 10].reset_index(drop=True)
+            yearly = yearly[yearly['count'] > 10].reset_index(drop=True).sort_values(by=['group_date'],ascending=True)
 
             n_years = yearly['group_date'].nunique()
             zeros = [0]*n_years
@@ -99,7 +99,7 @@ def plot_sentiment_trends(df,term='',style='fivethirtyeight'):
             #yearly_pos['max'].plot(label='Max')
             #yearly_pos['min'].plot(label='Min')
             #yearly_pos['mean'].plot(label='Avg')
-            plt.plot(yearly['perc_pos'],label='Percent Positive Articles',color='DodgerBlue')
+            plt.plot(yearly['group_date'],yearly['perc_pos'],label='Percent Positive Articles',color='DodgerBlue')
             #yearly_neg['count'].plot(label='Negative')
             plt.xlabel("Year")
             #plt.xticks(yearly.index)
@@ -114,7 +114,7 @@ def plot_sentiment_trends(df,term='',style='fivethirtyeight'):
             plt.title("Average {} Article Sentiment".format(disease))
             plt.ylabel("Average Total Sentiment")
             plt.plot(zeros,'--',linewidth=1,color='red')
-            yearly['mean'].plot(label='Mean',color='SeaGreen')
+            plt.plot(yearly['group_date'], yearly['mean'],label='Mean',color='SeaGreen')
             #yearly_neg['min'].plot(label='Min')
             #yearly_neg['mean'].plot(label='Avg')
             #yearly_neg['count'].plot(label='Count')
